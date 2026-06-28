@@ -1,0 +1,915 @@
+{
+  "name": "AI Destekli Veri Kalite ve Hata Analiz Sistemi",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {}
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -800,
+        -192
+      ],
+      "id": "c3f292c3-be94-41c5-a31b-80ee2f9294e2",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "url": "https://my.api.mockaroo.com/customers.json?key=9feaf290",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -592,
+        -192
+      ],
+      "id": "9b045b26-1a21-46ff-adf1-84e0c3782eff",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code Node - 1. Kalite Kontrol & Hata Birleştirici\nconst items = $input.all();\n\n// Hata ağırlıkları (yüksek = daha kritik)\nconst ERROR_WEIGHTS = {\n  email: 100,\n  first_name: 80,\n  last_name: 70,\n  phone: 50,\n  city: 30\n};\n\n// Ciddiyet eşikleri (toplam skora göre)\nfunction getSeverityHint(totalScore) {\n  if (totalScore >= 150) return \"Kritik\";\n  if (totalScore >= 100) return \"Yüksek\";\n  if (totalScore >= 50)  return \"Orta\";\n  return \"Düşük\";\n}\n\nreturn items.map(item => {\n  const d = item.json;\n  const errors = [];\n  let totalScore = 0;\n\n  // --- Alan kontrolleri ---\n  if (!d.email || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(String(d.email).trim())) {\n    errors.push({ field: \"email\", msg: \"E-posta eksik veya geçersiz format\", weight: ERROR_WEIGHTS.email });\n  }\n  if (!d.first_name || String(d.first_name).trim().length < 2) {\n    errors.push({ field: \"first_name\", msg: \"Ad eksik veya çok kısa\", weight: ERROR_WEIGHTS.first_name });\n  }\n  if (!d.last_name || String(d.last_name).trim().length < 2) {\n    errors.push({ field: \"last_name\", msg: \"Soyad eksik veya çok kısa\", weight: ERROR_WEIGHTS.last_name });\n  }\n  if (d.phone && !/^\\+?[\\d\\s\\-()]{7,15}$/.test(String(d.phone).trim())) {\n    errors.push({ field: \"phone\", msg: \"Telefon formatı geçersiz\", weight: ERROR_WEIGHTS.phone });\n  }\n  if (!d.city || String(d.city).trim().length < 2) {\n    errors.push({ field: \"city\", msg: \"Şehir eksik\", weight: ERROR_WEIGHTS.city });\n  }\n\n  // --- Şüpheli mi? ---\n  const is_suspicious = errors.length > 0;\n\n  if (!is_suspicious) {\n    return { json: { ...d, is_suspicious: false, error_summary: \"\", severity_hint: \"\" } };\n  }\n\n  // --- Önceliğe göre sırala ---\n  errors.sort((a, b) => b.weight - a.weight);\n  totalScore = errors.reduce((sum, e) => sum + e.weight, 0);\n\n  // --- Birleşik özet oluştur ---\n  const primaryError = errors[0].msg;\n  const otherErrors  = errors.slice(1).map(e => e.field).join(\", \");\n  \n  const error_summary = errors.length === 1\n    ? primaryError\n    : `${primaryError}. Ayrıca eksik: ${otherErrors}`;\n\n  // --- Ayrıntılı hata listesi (debugging için) ---\n  const error_reason = errors.map(e => e.msg).join(\" | \");\n\n  return {\n    json: {\n      ...d,\n      is_suspicious,\n      error_reason,\n      error_summary,          // ← Ollama'ya bu gidecek\n      severity_hint: getSeverityHint(totalScore),  // ← Ön tahmin (opsiyonel)\n      error_count: errors.length,\n      error_fields: errors.map(e => e.field)\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -384,
+        -192
+      ],
+      "id": "188d3494-5b46-4110-86bb-bb395d70db44",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d0cda8ba-554c-4e31-980b-b31a20c75340",
+              "leftValue": "={{ $json.is_suspicious }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -176,
+        -192
+      ],
+      "id": "f3aeb6f1-0019-434a-bded-afa952cd9527",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Hata özeti: {{ $json.error_summary }}\n\nYanıt (sadece JSON):",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "=Sen bir veri kalitesi botusun. Sadece JSON döndür. Başka hiçbir şey yazma.\n\nÇÖZÜM ÖNERİSİ KURALLARI:\n- Maksimum 8 kelime\n- Eylemle başla: \"Kontrol et\", \"Düzelt\", \"Tamamla\", \"Doğrula\"\n- Tek cümle, nokta ile bitir.\n- Asla şu kalıpları kullanma: \"yanıt doldurulmasını\", \"engellemez\", \"oluştuğunuzda\", \"göre\"\n\nDOĞRU ÖRNEKLER:\nGirdi: \"E-posta eksik veya geçersiz format\"\nÇıktı: {\"hata_turu\":\"Geçersiz e-posta\",\"ciddiyet\":\"Yüksek\",\"cozum_onerisi\":\"E-posta adresini doğrulayıp güncelleyin.\"}\n\nGirdi: \"Ad eksik veya çok kısa\"\nÇıktı: {\"hata_turu\":\"Eksik ad bilgisi\",\"ciddiyet\":\"Yüksek\",\"cozum_onerisi\":\"Müşteri adını eksiksiz girin.\"}\n\nGirdi: \"Şehir eksik\"\nÇıktı: {\"hata_turu\":\"Eksik şehir\",\"ciddiyet\":\"Orta\",\"cozum_onerisi\":\"Şehir alanını doldurun.\"}\n\nGirdi: \"E-posta eksik veya geçersiz format. Ayrıca eksik: first_name, city\"\nÇıktı: {\"hata_turu\":\"Çoklu alan hatası\",\"ciddiyet\":\"Kritik\",\"cozum_onerisi\":\"E-posta, ad ve şehir alanlarını tamamlayın.\"}\n\nFORMAT: {\"hata_turu\":\"...\",\"ciddiyet\":\"...\",\"cozum_onerisi\":\"...\"}\nciddiyet: yalnızca Kritik | Yüksek | Orta | Düşük"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        48,
+        -208
+      ],
+      "id": "53bcdae4-d572-4a55-a9a3-05977dc32bc1",
+      "name": "Basic LLM Chain"
+    },
+    {
+      "parameters": {
+        "model": "phi3:latest",
+        "options": {
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
+      "typeVersion": 1,
+      "position": [
+        48,
+        -32
+      ],
+      "id": "4f57e427-6847-4327-8208-e0fd77a59a78",
+      "name": "Ollama Chat Model",
+      "credentials": {
+        "ollamaApi": {
+          "id": "cUc2IeLKMg63A8CZ",
+          "name": "Ollama account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1a786c08-f252-4580-9126-ca08b16774c6",
+              "name": "id",
+              "value": "={{ $('If').item.json.id }}",
+              "type": "number"
+            },
+            {
+              "id": "cea4f2d4-c626-4552-a8d0-cdca7a4f3bc8",
+              "name": "first_name",
+              "value": "={{ $('If').item.json.first_name }}",
+              "type": "string"
+            },
+            {
+              "id": "58947054-f19f-48bd-87d7-68a80c06962d",
+              "name": "last_name",
+              "value": "={{ $('If').item.json.last_name }}",
+              "type": "string"
+            },
+            {
+              "id": "12ea532c-97a6-4ffd-b6ef-f70fbe6028ac",
+              "name": "email",
+              "value": "={{ $('If').item.json.email }}",
+              "type": "string"
+            },
+            {
+              "id": "9b268f35-6835-4a83-b2fc-eedc24520425",
+              "name": "phone",
+              "value": "={{ $('If').item.json.phone }}",
+              "type": "string"
+            },
+            {
+              "id": "382bca67-bb17-4ae9-8319-49be0dd6335b",
+              "name": "country",
+              "value": "={{ $('If').item.json.country }}",
+              "type": "string"
+            },
+            {
+              "id": "89c7f79c-71e6-4a1c-91a3-7b843c47d4b1",
+              "name": "city",
+              "value": "={{ $('If').item.json.city }}",
+              "type": "string"
+            },
+            {
+              "id": "29f5af01-3b70-4437-9611-c66815fc71e6",
+              "name": "is_suspicious",
+              "value": "={{ $('If').item.json.is_suspicious }}",
+              "type": "boolean"
+            },
+            {
+              "id": "6a140582-ea5f-488b-8d99-2562250faa56",
+              "name": "error_reason",
+              "value": "={{ $('If').item.json.error_reason }}",
+              "type": "string"
+            },
+            {
+              "id": "e201ca25-b73f-4e87-ac90-9687e8953ba9",
+              "name": "ciddiyet",
+              "value": "={{ $json.ciddiyet }}",
+              "type": "string"
+            },
+            {
+              "id": "81d2c5a4-641e-4d41-9646-501efcb60178",
+              "name": "cozum_onerisi",
+              "value": "={{ $json.cozum_onerisi }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        592,
+        -208
+      ],
+      "id": "9e3dd54c-11d6-4173-92e3-086a77050e6b",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1aDp0b2hoEpWXWxRkH9-QVDFcCLpTmm-5hhbpbt2GH4Y",
+          "mode": "list",
+          "cachedResultName": "Veri_Kalite_Takibi",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1aDp0b2hoEpWXWxRkH9-QVDFcCLpTmm-5hhbpbt2GH4Y/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 654208063,
+          "mode": "list",
+          "cachedResultName": "Hatalı_Veriler",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1aDp0b2hoEpWXWxRkH9-QVDFcCLpTmm-5hhbpbt2GH4Y/edit#gid=654208063"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "first_name": "={{ $json.first_name }}",
+            "last_name": "={{ $json.last_name }}",
+            "phone": "={{ $json.phone }}",
+            "email": "={{ $json.email }}",
+            "country": "={{ $json.country }}",
+            "city": "={{ $json.city }}",
+            "hata_turu": "={{ $json.error_reason }}",
+            "timestamp": "={{ $now }}",
+            "cozum_onerisi": "={{ $json.cozum_onerisi }}",
+            "ciddiyet": "={{ $json.ciddiyet }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "first_name",
+              "displayName": "first_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_name",
+              "displayName": "last_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "country",
+              "displayName": "country",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "city",
+              "displayName": "city",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "hata_turu",
+              "displayName": "hata_turu",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "ciddiyet",
+              "displayName": "ciddiyet",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cozum_onerisi",
+              "displayName": "cozum_onerisi",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        800,
+        -208
+      ],
+      "id": "69dd0b6e-dc8c-4201-9ac9-f96198f2a55d",
+      "name": "Append or update row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "vEsp27M3GDPQAHKx",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1aDp0b2hoEpWXWxRkH9-QVDFcCLpTmm-5hhbpbt2GH4Y",
+          "mode": "list",
+          "cachedResultName": "Veri_Kalite_Takibi",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1aDp0b2hoEpWXWxRkH9-QVDFcCLpTmm-5hhbpbt2GH4Y/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Temiz_Veriler",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1aDp0b2hoEpWXWxRkH9-QVDFcCLpTmm-5hhbpbt2GH4Y/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "first_name": "={{ $json.first_name }}",
+            "last_name": "={{ $json.last_name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "country": "={{ $json.country }}",
+            "city": "={{ $json.city }}",
+            "timestamp": "={{ $now }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "first_name",
+              "displayName": "first_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_name",
+              "displayName": "last_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "country",
+              "displayName": "country",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "city",
+              "displayName": "city",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "is_suspicious",
+              "displayName": "is_suspicious",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -176,
+        48
+      ],
+      "id": "1b91a077-cdcd-4a45-b8a6-36a2b07c0cda",
+      "name": "Append or update row in sheet1",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "vEsp27M3GDPQAHKx",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nconst VALID_SEVERITY = new Set([\"Kritik\", \"Yüksek\", \"Orta\", \"Düşük\"]);\nconst MAX_HATA_TURU = 60;\nconst MAX_COZUM_ONERISI = 120;\n\nconst JUNK_PATTERNS = [\n  /yanıt doldurulmasını/i,\n  /engellemez/i,\n  /oluştuğunuzda/i,\n  /\\. hata/i,\n  /göre,/i,\n  /durumda daha/i,\n  /varsayıldıysa/i,\n  /şekilde kullanın\\.?\\s*e-posta/i\n];\n\nfunction isJunk(text) {\n  if (!text) return true;\n  if (JUNK_PATTERNS.some(p => p.test(text))) return true;\n  if (text.split(/\\s+/).length > 10) return true;\n  return false;\n}\n\nfunction sanitizeText(str, maxLen) {\n  if (!str || typeof str !== \"string\") return \"\";\n  return str.trim()\n    .replace(/\\s+/g, \" \")\n    .replace(/\\.{2,}/g, \".\")\n    .slice(0, maxLen);\n}\n\nfunction buildFallbackSuggestion(errorSummary) {\n  const s = String(errorSummary || \"\").toLowerCase();\n  if (s.includes(\"e-posta\")) return \"E-posta adresini doğrulayıp güncelleyin.\";\n  if (s.includes(\"ad \") || s.includes(\"first_name\")) return \"Müşteri adını eksiksiz girin.\";\n  if (s.includes(\"soyad\") || s.includes(\"last_name\")) return \"Müşteri soyadını eksiksiz girin.\";\n  if (s.includes(\"telefon\")) return \"Telefon numarasını doğru formatta girin.\";\n  if (s.includes(\"şehir\") || s.includes(\"city\")) return \"Şehir alanını doldurun.\";\n  if (s.includes(\"eksik\")) return \"Eksik alanları tamamlayıp kaydı güncelleyin.\";\n  return \"Manuel kontrol gerekli.\";\n}\n\nfunction validateAndFix(obj, severityHint, errorSummary) {\n  const result = {};\n\n  result.hata_turu = sanitizeText(\n    obj.hata_turu || obj[\"hata_türü\"] || obj.error_type || \"\",\n    MAX_HATA_TURU\n  ) || \"Veri hatası\";\n\n  const rawSev = String(obj.ciddiyet || obj.severity || \"\").trim();\n  result.ciddiyet = VALID_SEVERITY.has(rawSev) ? rawSev : (severityHint || \"Yüksek\");\n\n  const aiSuggestion = sanitizeText(\n    obj.cozum_onerisi || obj[\"çözüm_önerisi\"] || obj.solution || obj.cozum || \"\",\n    MAX_COZUM_ONERISI\n  );\n\n  if (aiSuggestion && !isJunk(aiSuggestion)) {\n    result.cozum_onerisi = aiSuggestion;\n    result._suggestion_fallback = false;\n  } else {\n    result.cozum_onerisi = buildFallbackSuggestion(errorSummary);\n    result._suggestion_fallback = true;\n  }\n\n  return result;\n}\n\nfunction parseLayer1(text) {\n  return JSON.parse(text.trim());\n}\n\nfunction parseLayer2(text) {\n  const match = text.match(/\\{[\\s\\S]*?\\}/);\n  if (!match) throw new Error(\"JSON bloğu bulunamadı\");\n  return JSON.parse(match[0]);\n}\n\nfunction parseLayer3(text) {\n  const fieldPatterns = {\n    hata_turu: [\n      /\"hata_t[üu]r[üu]\"\\s*:\\s*\"([^\"]+)\"/i,\n      /hata[_\\s]t[üu]r[üu][:\\s]+([^\\n,}]+)/i\n    ],\n    ciddiyet: [\n      /\"ciddiyet\"\\s*:\\s*\"([^\"]+)\"/i,\n      /ciddiyet[:\\s]+([^\\n,}]+)/i\n    ],\n    cozum_onerisi: [\n      /\"[çc]oz[üu]m[_\\s]?[öo]nerisi\"\\s*:\\s*\"([^\"]+)\"/i,\n      /[çc]oz[üu]m[:\\s]+([^\\n,}]+)/i\n    ]\n  };\n\n  const result = {};\n  for (const [field, patterns] of Object.entries(fieldPatterns)) {\n    for (const pattern of patterns) {\n      const m = text.match(pattern);\n      if (m?.[1]) {\n        result[field] = m[1].trim();\n        break;\n      }\n    }\n  }\n\n  if (!result.hata_turu && !result.ciddiyet && !result.cozum_onerisi) {\n    throw new Error(\"Hiçbir alan bulunamadı\");\n  }\n  return result;\n}\n\nreturn items.map(item => {\n  const rawOutput =\n    item.json?.message?.content ||\n    item.json?.response ||\n    item.json?.text ||\n    \"\";\n\n  const severityHint = item.json?.severity_hint || \"Yüksek\";\n  const errorSummary = item.json?.error_summary || \"\";\n\n  let parsed = null;\n  let parseMethod = \"\";\n  let parseError = \"\";\n\n  const layers = [\n    [\"strict\", () => parseLayer1(rawOutput)],\n    [\"regex\",  () => parseLayer2(rawOutput)],\n    [\"field\",  () => parseLayer3(rawOutput)]\n  ];\n\n  for (const [name, fn] of layers) {\n    try {\n      parsed = fn();\n      parseMethod = name;\n      break;\n    } catch (e) {\n      parseError = e.message;\n    }\n  }\n\n  if (!parsed) {\n    parseMethod = \"fallback\";\n    parsed = {\n      hata_turu: errorSummary.slice(0, MAX_HATA_TURU) || \"Veri hatası\",\n      ciddiyet: severityHint,\n      cozum_onerisi: \"\"\n    };\n  }\n\n  const clean = validateAndFix(parsed, severityHint, errorSummary);\n\n  return {\n    json: {\n      ...item.json,\n      ...clean,\n      _parse_method: parseMethod,\n      _parse_error: parseError\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        -208
+      ],
+      "id": "b1b7d9ca-200e-4c19-a9c9-0887fd335702",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "chatId": "7693495388",
+        "text": "=📢 Bilgilendirme\nSayın {{ $json.first_name }} {{ $json.last_name }},\nE-posta adresiniz hatalı veya geçersiz. Lütfen güncelleyerek bizimle paylaşın.",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1616,
+        -224
+      ],
+      "id": "209cdaea-8113-4229-9345-7b1e4db930b4",
+      "name": "Send a text message",
+      "webhookId": "0ffecb49-7b82-4cf5-8dd3-817ce9ee874b",
+      "credentials": {
+        "telegramApi": {
+          "id": "GfXrZK6hYP5lhOYF",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "7ed61820-d2bd-4604-876e-4f683c7235b8",
+              "leftValue": "={{ $json.missing_email }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1216,
+        -208
+      ],
+      "id": "b97397e1-8d3b-4e5a-8122-79ce868fbbb5",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "jsCode": "for (const item of items) {\n  item.json.missing_email = !item.json.email || !item.json.email.includes('@');\n  item.json.missing_phone = !item.json.phone;\n  item.json.missing_other = !item.json.first_name || !item.json.last_name || !item.json.city;\n}\nreturn items;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1008,
+        -208
+      ],
+      "id": "d8170f96-7ec6-4905-945f-243daf723c13",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "683fd89c-39c5-447c-b0bc-b877217de179",
+              "leftValue": "={{ $json.missing_phone }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1296,
+        0
+      ],
+      "id": "d2c6a52a-86c2-4b9d-9aa0-08a4e6976367",
+      "name": "If2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "62cf2d2d-c044-4427-857c-836bb006dd7c",
+              "leftValue": "={{ $json.missing_other }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1296,
+        208
+      ],
+      "id": "6c0e26bc-4309-4a69-8535-99a51fd4d001",
+      "name": "If3"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1aDp0b2hoEpWXWxRkH9-QVDFcCLpTmm-5hhbpbt2GH4Y",
+          "mode": "list",
+          "cachedResultName": "Veri_Kalite_Takibi",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1aDp0b2hoEpWXWxRkH9-QVDFcCLpTmm-5hhbpbt2GH4Y/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Temiz_Veriler",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1aDp0b2hoEpWXWxRkH9-QVDFcCLpTmm-5hhbpbt2GH4Y/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1616,
+        320
+      ],
+      "id": "8412cb5c-9236-40de-976a-dbf1b0c83f7c",
+      "name": "Append or update row in sheet2",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "vEsp27M3GDPQAHKx",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "7693495388",
+        "text": "=📢 Bilgilendirme\nSayın {{ $json.first_name }} {{ $json.last_name }},\nSistemimizde telefon numaranız bulunmuyor. İletişimimiz için lütfen numaranızı güncelleyin.",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1616,
+        -16
+      ],
+      "id": "2069ce2f-ca3d-4d2f-8245-18cee96b5222",
+      "name": "Send a text message1",
+      "webhookId": "0ffecb49-7b82-4cf5-8dd3-817ce9ee874b",
+      "credentials": {
+        "telegramApi": {
+          "id": "GfXrZK6hYP5lhOYF",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "7693495388",
+        "text": "=📢 Profil Güncelleme\nSayın {{ $json.first_name }},\nProfil bilgilerinizde (İsim/Soyisim/Şehir) eksiklik tespit ettik. İşlemlerinize devam edebilmemiz için lütfen bilgilerinizi tamamlayın.",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1616,
+        144
+      ],
+      "id": "80a4d90c-bf59-4018-9829-7bbe0dc8f261",
+      "name": "Send a text message2",
+      "webhookId": "0ffecb49-7b82-4cf5-8dd3-817ce9ee874b",
+      "credentials": {
+        "telegramApi": {
+          "id": "GfXrZK6hYP5lhOYF",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Append or update row in sheet1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If2": {
+      "main": [
+        [
+          {
+            "node": "Send a text message1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "If3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If3": {
+      "main": [
+        [
+          {
+            "node": "Send a text message2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Append or update row in sheet2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "cdf944c4-4fb5-484b-9a06-09f06e6161c4",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "af9401dd00c5958923fede9aa76f6cd9f79b70bceb2add4f2efb1963f28e56f6"
+  },
+  "id": "p597ocOiJehdbqrP",
+  "tags": []
+}
